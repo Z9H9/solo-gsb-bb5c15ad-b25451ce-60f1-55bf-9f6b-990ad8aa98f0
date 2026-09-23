@@ -9,7 +9,7 @@ from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
 from .conflicts import (
@@ -28,6 +28,7 @@ from .importing import (
     content_fingerprint,
     parse_package,
 )
+from .memo_export import render_memo_markdown
 from .migration import PENDING_STATUSES, build_migration_preview
 from .review_sampling import (
     build_context,
@@ -1290,6 +1291,32 @@ def remove_evidence(document_id: int, memo_id: int, evidence_id: int) -> Respons
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="证据不存在")
     return Response(status_code=204)
+
+
+@app.get("/api/documents/{document_id}/memos/{memo_id}/export")
+def export_memo_markdown(document_id: int, memo_id: int) -> PlainTextResponse:
+    """下载单条备忘录的 Markdown 导出（附件）。
+
+    正文以代码围栏保留原文；证据逐条列出关联时保存的编码名、区间与原文
+    摘录快照及当前状态（当前有效 / 已变化 / 已删除）；已变化时附当前编码、
+    区间与摘录，已删除时原快照完整保留。用户内容均已转义，不会破坏文档
+    结构。归档备忘录同样可导出。
+    """
+    with get_db() as conn:
+        doc = get_document_or_404(conn, document_id)
+        memo = get_memo_or_404(conn, memo_id)
+        if memo["document_id"] != document_id:
+            raise HTTPException(status_code=404, detail="备忘录不存在")
+        payload = serialize_memo(conn, doc, memo)
+    exported_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    markdown = render_memo_markdown(payload, doc["title"], exported_at)
+    return PlainTextResponse(
+        content=markdown,
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="memo-{memo_id}.md"',
+        },
+    )
 
 
 @app.put("/api/codings/{coding_id}")

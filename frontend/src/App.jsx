@@ -13,6 +13,7 @@ import ReviewView from './components/ReviewView'
 import SearchBatchPanel from './components/SearchBatchPanel'
 import ImportDialog from './components/ImportDialog'
 import MigrationDialog from './components/MigrationDialog'
+import MemoView from './components/MemoView'
 
 export default function App() {
   const [docs, setDocs] = useState([])
@@ -52,6 +53,10 @@ export default function App() {
   const [pendingLocate, setPendingLocate] = useState(null)
   const [showImport, setShowImport] = useState(false)
   const [showMigration, setShowMigration] = useState(false)
+  // 分析备忘录：active / archived 两个分区（null = 尚未加载）
+  const [memoData, setMemoData] = useState(null)
+  const [memoLoading, setMemoLoading] = useState(false)
+  const [memoError, setMemoError] = useState(null)
 
   const showError = useCallback((e) => {
     setError(e.message || String(e))
@@ -96,6 +101,9 @@ export default function App() {
       setSelection(null)
       // 跨文档定位的待定位片段指向新文档本身，需保留；其余情况清除
       setPendingLocate((cur) => (cur && cur.docId === docId ? cur : null))
+      // 备忘录数据按文档隔离：切文档后回到备忘录标签时重新加载
+      setMemoData(null)
+      setMemoError(null)
       loadDocument(docId)
     }
   }, [docId, loadDocument])
@@ -249,6 +257,30 @@ export default function App() {
   useEffect(() => {
     loadReview()
   }, [loadReview])
+
+  // ---------- 分析备忘录（在办 / 已归档两个分区，进入标签时加载） ----------
+
+  const loadMemos = useCallback(async () => {
+    if (docId == null) return
+    setMemoLoading(true)
+    setMemoError(null)
+    try {
+      const [active, archived] = await Promise.all([
+        api.listMemos(docId, 'active'),
+        api.listMemos(docId, 'archived'),
+      ])
+      setMemoData({ active: active.memos, archived: archived.memos })
+    } catch (e) {
+      setMemoError(e.message || String(e))
+    } finally {
+      setMemoLoading(false)
+    }
+  }, [docId])
+
+  // 首次进入备忘录标签时加载；在标签页内发生任何备忘录操作后再进来也刷新
+  useEffect(() => {
+    if (view === 'memo' && memoData === null) loadMemos()
+  }, [view, memoData, loadMemos])
 
   // 最小缺口长度筛选在前端进行，避免每次调整都重新请求
   const visibleGaps = useMemo(
@@ -434,6 +466,44 @@ export default function App() {
   function handleLocateReviewItem(item) {
     setView('text')
     setPendingLocate({ docId, start: item.start, end: item.end })
+  }
+
+  // ---------- 分析备忘录 ----------
+
+  async function handleCreateMemo(payload) {
+    const created = await api.createMemo(docId, payload)
+    await loadMemos()
+    return created
+  }
+
+  async function handleUpdateMemo(memoId, patch) {
+    await api.updateMemo(docId, memoId, patch)
+    await loadMemos()
+  }
+
+  async function handleDeleteMemo(memoId) {
+    await api.deleteMemo(docId, memoId)
+    await loadMemos()
+  }
+
+  async function handleAddMemoEvidence(memoId, codingIds) {
+    await api.addMemoEvidence(docId, memoId, codingIds)
+    await loadMemos()
+  }
+
+  async function handleRemoveMemoEvidence(memoId, evidenceId) {
+    await api.removeMemoEvidence(docId, memoId, evidenceId)
+    await loadMemos()
+  }
+
+  // 证据「定位正文」：切回正文，闪烁关联时快照区间（已变化证据按当前区间定位）
+  function handleLocateMemoEvidence(ev) {
+    const range =
+      ev.state === 'changed' && ev.current
+        ? { start: ev.current.start, end: ev.current.end }
+        : { start: ev.start, end: ev.end }
+    setView('text')
+    setPendingLocate({ docId, ...range })
   }
 
   // 分布对比单元格 → 切到目标文档正文并定位首个对应片段
@@ -657,6 +727,14 @@ export default function App() {
             >
               标注复核
             </button>
+            <button
+              role="tab"
+              aria-selected={view === 'memo'}
+              className={view === 'memo' ? 'active' : ''}
+              onClick={() => setView('memo')}
+            >
+              分析备忘录
+            </button>
           </div>
           {view === 'text' ? (
             <TextView
@@ -716,6 +794,21 @@ export default function App() {
               onDelete={handleDeleteReview}
               onPatch={handlePatchReview}
               onLocate={handleLocateReviewItem}
+            />
+          ) : view === 'memo' ? (
+            <MemoView
+              key={`memo-${docId}`}
+              docId={docId}
+              memos={memoData}
+              loading={memoLoading}
+              error={memoError}
+              codings={codings}
+              onCreate={handleCreateMemo}
+              onUpdate={handleUpdateMemo}
+              onDelete={handleDeleteMemo}
+              onAddEvidence={handleAddMemoEvidence}
+              onRemoveEvidence={handleRemoveMemoEvidence}
+              onLocate={handleLocateMemoEvidence}
             />
           ) : (
             <DistributionView
