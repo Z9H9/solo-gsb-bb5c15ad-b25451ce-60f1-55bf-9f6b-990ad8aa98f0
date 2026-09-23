@@ -91,7 +91,14 @@ docker compose up --build
   - **过期与重生成**：批次生成时锁定文档指纹与标注集合指纹；之后若**文档正文变化**（编辑 / 版本迁移）或**标注变化**（新增 / 删除 / 改区间 / 改编码），批次自动标记为**已过期**（区分两种原因），队列仍可查看但复核操作暂停，提示重新生成；重新生成按最新文档与标注重新稳定抽样并清空此前结论，也可直接删除批次；
   - 抽样设置、复核结论与处理时间均**持久化在 SQLite**（`review_batches` / `review_batch_codes` / `review_items` 三张表），刷新、重启不丢失；每篇文档至多保留一个批次。
   - 对应 `GET/POST/DELETE /api/documents/{id}/review` 与 `PATCH /api/documents/{id}/review/items/{itemId}`。
-- **持久化**：所有文档、编码本、标注与抽样复核批次均存于 SQLite，刷新页面后原样恢复；首次启动自动载入一份示例访谈与编码。
+- **分析备忘录**：正文区顶部切换到「分析备忘录」标签，左列按**在办 / 已归档**两个分区列出当前文档的备忘录，右列为编辑器，可新建、编辑标题与正文、归档 / 恢复 / 永久删除——
+  - **证据快照**：可勾选本篇已有标注作为证据关联；关联瞬间后端保存该标注的**编码名、区间与原文摘录快照**（`memo_evidences` 表）；此后标注被修改或被删除（含编码删除导致的级联删除），证据仍保留快照并明确标示**当前有效 / 原标注已变化 / 原标注已删除**：已变化时并列展示当前编码、区间与摘录，已删除时不丢失原快照。
+  - **单条 Markdown 下载**：每条备忘录提供「下载 Markdown」入口（在办与已归档均可），导出单条备忘录——
+    - **正文逐字保留**：以「自适应长度」反引号围栏代码块包裹，用户写入的 `#` 标题、` ``` ` 代码围栏、表格竖线等都不会破坏导出文档结构；
+    - **证据逐条列出**：每条证据列出关联时保存的编码名、半开区间、原文摘录快照及当前状态（当前有效 / 已变化 / 已删除）；**已变化**时同时列出当前编码、区间与摘录，**已删除**时仅保留快照并附删除说明；
+    - 标题、编码名等行内用户内容经 Markdown 转义（反斜杠、反引号、竖线、行首 `#`、换行压平），无法生成伪标题或打断列表 / 表格；
+    - 对应 `GET /api/documents/{id}/memos/{memoId}/export`（附件下载 `memo-{docId}-{memoId}.md`）；备忘录的增删改与证据关联见 `…/memos` 系列端点。
+- **持久化**：所有文档、编码本、标注、抽样复核批次与分析备忘录（含证据快照）均存于 SQLite，刷新页面后原样恢复；首次启动自动载入一份示例访谈与编码。
 
 ## 本地开发（不用 Docker）
 
@@ -129,6 +136,11 @@ npm run dev   # http://localhost:5173
 | POST | `/api/documents/{id}/review` | 生成抽样批次（替换该文档旧批次及全部结论）：请求体 `{codes:[{code_id, sample_size}…]}`；按 `sha256(文档指纹|编码id|标注id)` 稳定排序各取前 N 条，数量超过该编码标注数时取全部；编码不存在返回 404，编码在当前文档无标注（sample_size>0）或重复出现返回 422；返回完整批次 |
 | PATCH | `/api/documents/{id}/review/items/{itemId}` | 标记单条复核结论：请求体 `{status: pending\|approved\|revision, note}`；通过/需修订记录处理时间，pending 清空处理时间；批次已过期返回 409，条目不存在或不属于该文档返回 404；返回完整批次 |
 | DELETE | `/api/documents/{id}/review` | 丢弃当前文档的抽样批次及全部复核结论（204） |
+| GET | `/api/documents/{id}/memos?status=` | 列出备忘录（`active` 在办 / `archived` 已归档 / `all`），每条含证据快照与实时状态（`current` 有效 / `changed` 已变化附当前编码区间摘录 / `missing` 已删除） |
+| POST | `/api/documents/{id}/memos` | 新建备忘录 `{title, body?, coding_ids?}`，创建时即可关联证据并落快照 |
+| GET / PATCH / DELETE | `/api/documents/{id}/memos/{memoId}` | 单条详情 / 编辑标题正文或归档切换 / 永久删除（跨文档返回 404） |
+| POST / DELETE | `/api/documents/{id}/memos/{memoId}/evidences[/{evidenceId}]` | 追加证据标注（关联时保存编码、区间、原文摘录快照；重复关联跳过；不存在返回 422）/ 移除单条证据关联（不影响原标注） |
+| GET | `/api/documents/{id}/memos/{memoId}/export` | 导出单条备忘录 Markdown（附件 `memo-{docId}-{memoId}.md`）：正文围栏包裹逐字保留，证据逐条列出快照编码 / 区间 / 摘录与当前状态，已变化附当前值、已删除保留快照；用户内容经 Markdown 转义 |
 | GET / POST | `/api/codes` | 编码本列表 / 新建（重名返回 409） |
 | PUT / DELETE | `/api/codes/{id}` | 重命名、改色 / 删除（级联删除标注） |
 | POST | `/api/codings/preview` | 冲突预览 `{document_id, code_id, start, end, exclude_id?}` |
@@ -154,11 +166,12 @@ npm run dev   # http://localhost:5173
 │       ├── importing.py      # 标注包导入：指纹 / 映射 / 校验 / 分类（预览计划）纯函数
 │       ├── migration.py      # 文档版本迁移：文本差异对齐 / 区间映射分类（保留·待确认·失配）纯函数
 │       ├── review_sampling.py # 标注抽样复核：文档/标注指纹、稳定散列抽样、原文上下文纯函数
-│       └── db.py             # SQLite 连接、建表（含抽样复核三表）、示例数据
+│       ├── memo_export.py     # 备忘录 Markdown 导出：用户内容转义 / 自适应围栏 / 证据状态渲染纯函数
+│       └── db.py             # SQLite 连接、建表（含抽样复核三表与备忘录证据快照表）、示例数据
 └── frontend/
     ├── Dockerfile          # 多阶段构建：Vite build → nginx
     ├── nginx.conf          # 静态托管 + /api 反向代理
     └── src/
         ├── App.jsx         # 状态编排与冲突决策流
-        └── components/     # TextView / CodingForm / SearchBatchPanel / ImportDialog / MigrationDialog / ConflictDialog / Sidebar / CooccurrenceView / SpeakerView / DistributionView / GapView / TransitionView / ReviewView
+        └── components/     # TextView / CodingForm / SearchBatchPanel / ImportDialog / MigrationDialog / ConflictDialog / Sidebar / CooccurrenceView / SpeakerView / DistributionView / GapView / TransitionView / ReviewView / MemoView
 ```

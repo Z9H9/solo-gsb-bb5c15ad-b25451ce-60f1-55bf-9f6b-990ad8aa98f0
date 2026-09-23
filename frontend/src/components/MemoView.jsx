@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { api } from '../api'
 
 /** 压缩空白并截断 */
 function excerpt(text, max = 60) {
@@ -101,6 +102,7 @@ function EvidenceCard({ ev, archived, onRemove, onLocate }) {
  * 「已变化 / 已删除」。在办备忘录可归档，归档后只读，可恢复或永久删除。
  */
 export default function MemoView({
+  docId,
   memos,
   loading,
   error,
@@ -263,6 +265,8 @@ export default function MemoView({
     setBusyEvidence(ev.id)
     try {
       await onRemoveEvidence(selected.id, ev.id)
+    } catch {
+      /* 错误已由上层提示 */
     } finally {
       setBusyEvidence(null)
     }
@@ -369,6 +373,14 @@ export default function MemoView({
                   ) : null}
                   <span>创建于 {fmtTime(selected.created_at)}</span>
                   <span>更新于 {fmtTime(selected.updated_at)}</span>
+                  <a
+                    className="mv-download"
+                    href={api.memoExportUrl(docId, selected.id)}
+                    download
+                    title="下载本条备忘录的 Markdown 文件（正文原样保留，证据含快照与当前状态）"
+                  >
+                    ⭳ 下载 Markdown
+                  </a>
                 </div>
               )}
 

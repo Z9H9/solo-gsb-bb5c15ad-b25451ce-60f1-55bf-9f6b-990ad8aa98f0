@@ -28,6 +28,7 @@ from .importing import (
     content_fingerprint,
     parse_package,
 )
+from .memo_export import build_memo_markdown
 from .migration import PENDING_STATUSES, build_migration_preview
 from .review_sampling import (
     build_context,
@@ -1290,6 +1291,31 @@ def remove_evidence(document_id: int, memo_id: int, evidence_id: int) -> Respons
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="证据不存在")
     return Response(status_code=204)
+
+
+@app.get("/api/documents/{document_id}/memos/{memo_id}/export")
+def export_memo_markdown(document_id: int, memo_id: int) -> Response:
+    """导出单条备忘录为 Markdown（附件下载）。
+
+    正文逐字保留（自适应长度围栏代码块包裹，内部 Markdown 语法不被解析）；
+    证据逐条列出关联时保存的编码名、区间、摘录快照与当前状态（当前有效 /
+    已变化 / 已删除）：已变化时同时列出当前编码、区间与摘录，已删除时
+    仅保留快照、不丢失原内容。标题、编码名等行内用户内容均经转义，
+    无法破坏标题、代码围栏或表格结构。
+    """
+    with get_db() as conn:
+        doc = get_document_or_404(conn, document_id)
+        memo = get_memo_or_404(conn, memo_id)
+        if memo["document_id"] != document_id:
+            raise HTTPException(status_code=404, detail="备忘录不存在")
+        serialized = serialize_memo(conn, doc, memo)
+    markdown = build_memo_markdown(serialized, doc)
+    filename = f"memo-{document_id}-{memo_id}.md"
+    return Response(
+        content=markdown,
+        media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.put("/api/codings/{coding_id}")

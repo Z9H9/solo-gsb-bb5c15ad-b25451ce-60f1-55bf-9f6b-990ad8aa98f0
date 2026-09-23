@@ -127,6 +127,9 @@ export const api = {
       `/documents/${docId}/memos/${memoId}/evidences/${evidenceId}`,
       { method: 'DELETE' }
     ),
+  // 单条备忘录 Markdown 导出（附件下载链接，直接 <a download>）
+  memoExportUrl: (docId, memoId) =>
+    `${BASE}/documents/${docId}/memos/${memoId}/export`,
   updateCoding: (id, payload) =>
     request(`/codings/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteCoding: (id) => request(`/codings/${id}`, { method: 'DELETE' }),

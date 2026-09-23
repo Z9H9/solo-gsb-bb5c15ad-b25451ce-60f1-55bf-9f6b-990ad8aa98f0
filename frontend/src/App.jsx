@@ -13,6 +13,7 @@ import ReviewView from './components/ReviewView'
 import SearchBatchPanel from './components/SearchBatchPanel'
 import ImportDialog from './components/ImportDialog'
 import MigrationDialog from './components/MigrationDialog'
+import MemoView from './components/MemoView'
 
 export default function App() {
   const [docs, setDocs] = useState([])
@@ -27,7 +28,7 @@ export default function App() {
   const [error, setError] = useState(null)
   const [showNewDoc, setShowNewDoc] = useState(false)
   const [newDoc, setNewDoc] = useState({ title: '', content: '' })
-  const [view, setView] = useState('text') // text | cooccurrence | speakers | distribution | gaps | transitions
+  const [view, setView] = useState('text') // text | cooccurrence | speakers | distribution | gaps | transitions | review | memos
   const [coocStats, setCoocStats] = useState(null)
   const [coocLoading, setCoocLoading] = useState(false)
   const [coocError, setCoocError] = useState(null)
@@ -52,6 +53,10 @@ export default function App() {
   const [pendingLocate, setPendingLocate] = useState(null)
   const [showImport, setShowImport] = useState(false)
   const [showMigration, setShowMigration] = useState(false)
+  // 分析备忘录：{active: [...], archived: [...]}；null = 尚未加载
+  const [memos, setMemos] = useState(null)
+  const [memosLoading, setMemosLoading] = useState(false)
+  const [memosError, setMemosError] = useState(null)
 
   const showError = useCallback((e) => {
     setError(e.message || String(e))
@@ -250,6 +255,31 @@ export default function App() {
     loadReview()
   }, [loadReview])
 
+  // ---------- 分析备忘录（证据新鲜度随文档 / 标注变化刷新） ----------
+
+  const loadMemos = useCallback(async () => {
+    if (docId == null) return
+    setMemosLoading(true)
+    setMemosError(null)
+    try {
+      const [active, archived] = await Promise.all([
+        api.listMemos(docId, 'active'),
+        api.listMemos(docId, 'archived'),
+      ])
+      setMemos({ active: active.memos, archived: archived.memos })
+    } catch (e) {
+      setMemos(null)
+      setMemosError(e.message || String(e))
+    } finally {
+      setMemosLoading(false)
+    }
+    // docData 变化（标注增删改 / 迁移）后证据的有效 / 已变化 / 已删除状态随之刷新
+  }, [docId, docData])
+
+  useEffect(() => {
+    loadMemos()
+  }, [loadMemos])
+
   // 最小缺口长度筛选在前端进行，避免每次调整都重新请求
   const visibleGaps = useMemo(
     () => (gapStats?.gaps ?? []).filter((g) => g.length >= gapMinLen),
@@ -434,6 +464,66 @@ export default function App() {
   function handleLocateReviewItem(item) {
     setView('text')
     setPendingLocate({ docId, start: item.start, end: item.end })
+  }
+
+  // ---------- 分析备忘录 ----------
+
+  async function handleCreateMemo(payload) {
+    try {
+      const created = await api.createMemo(docId, payload)
+      await loadMemos()
+      return created
+    } catch (e) {
+      showError(e)
+      throw e
+    }
+  }
+
+  async function handleUpdateMemo(memoId, patch) {
+    try {
+      await api.updateMemo(docId, memoId, patch)
+      await loadMemos()
+    } catch (e) {
+      showError(e)
+      throw e
+    }
+  }
+
+  async function handleDeleteMemo(memoId) {
+    try {
+      await api.deleteMemo(docId, memoId)
+      await loadMemos()
+    } catch (e) {
+      showError(e)
+      throw e
+    }
+  }
+
+  async function handleAddMemoEvidence(memoId, codingIds) {
+    try {
+      await api.addMemoEvidence(docId, memoId, codingIds)
+      await loadMemos()
+    } catch (e) {
+      showError(e)
+      throw e
+    }
+  }
+
+  async function handleRemoveMemoEvidence(memoId, evidenceId) {
+    try {
+      await api.removeMemoEvidence(docId, memoId, evidenceId)
+      await loadMemos()
+    } catch (e) {
+      showError(e)
+      throw e
+    }
+  }
+
+  // 备忘录证据「定位正文」：切回正文闪烁定位标注当前位置（已删除证据按钮已禁用）
+  function handleLocateMemoEvidence(ev) {
+    const target = ev.current ?? ev
+    setView('text')
+    setPendingLocate({ docId, start: target.start, end: target.end })
   }
 
   // 分布对比单元格 → 切到目标文档正文并定位首个对应片段
@@ -657,6 +747,14 @@ export default function App() {
             >
               标注复核
             </button>
+            <button
+              role="tab"
+              aria-selected={view === 'memos'}
+              className={view === 'memos' ? 'active' : ''}
+              onClick={() => setView('memos')}
+            >
+              分析备忘录
+            </button>
           </div>
           {view === 'text' ? (
             <TextView
@@ -716,6 +814,21 @@ export default function App() {
               onDelete={handleDeleteReview}
               onPatch={handlePatchReview}
               onLocate={handleLocateReviewItem}
+            />
+          ) : view === 'memos' ? (
+            <MemoView
+              key={`memos-${docId}`}
+              docId={docId}
+              memos={memos}
+              loading={memosLoading}
+              error={memosError}
+              codings={sidebarCodings}
+              onCreate={handleCreateMemo}
+              onUpdate={handleUpdateMemo}
+              onDelete={handleDeleteMemo}
+              onAddEvidence={handleAddMemoEvidence}
+              onRemoveEvidence={handleRemoveMemoEvidence}
+              onLocate={handleLocateMemoEvidence}
             />
           ) : (
             <DistributionView
